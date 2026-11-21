@@ -1,0 +1,14 @@
+# 构建产物
+*.exe
+*.sys
+
+# Go
+*.test
+*.out
+
+# IDE
+.vscode/
+.idea/
+
+# 依赖缓存/日志
+*.log
