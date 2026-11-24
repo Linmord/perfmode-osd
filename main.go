@@ -1,4 +1,4 @@
-﻿// OSD 液态玻璃：左上角 + 温度/双风扇/实时功耗 + 两路提示 + 弹出停留后渐隐 + 托盘
+// OSD 液态玻璃：左上角 + 温度/双风扇/实时功耗 + 两路提示 + 弹出停留后渐隐 + 托盘
 package main
 
 import (
@@ -20,6 +20,7 @@ import (
 	"github.com/go-ole/go-ole/oleutil"
 	"golang.org/x/sys/windows"
 
+	"perfmode-osd/btbat"
 	"perfmode-osd/core"
 )
 
@@ -132,12 +133,16 @@ func startFnWatcher(ch chan<- FnEvent) error {
 }
 
 var textState struct {
-	title, sub    string
-	temp          int
-	fan1, fan2    int
-	power         float64
-	accent        string // 模式强调色
-	glyph         string // 左侧图标字
+	title, sub string
+	temp       int
+	fan1, fan2 int
+	power      float64
+	accent     string // 模式强调色
+	glyph      string // 左侧图标字
+
+	// 蓝牙耳机电量（-1 表示未连接/读不到）
+	btBattery int
+	btName    string
 }
 
 var (
@@ -223,6 +228,21 @@ func view(c *ui.Context) {
 				dataCell(c, "风扇1/2", fmt.Sprintf("%d/%d", textState.fan1, textState.fan2), ui.Hex("#54a0ff"))
 				ui.Box(c).Width(1).Height(24).Background(ui.Hex("#ffffff").Alpha(0.10))
 				dataCell(c, "功耗", fmt.Sprintf("%.1fW", textState.power), accent)
+				// 耳机电量：只有连着才显示，标签用真实设备名
+				if textState.btBattery >= 0 {
+					ui.Box(c).Width(1).Height(24).Background(ui.Hex("#ffffff").Alpha(0.10))
+					btColor := ui.Hex("#2ed573")
+					if textState.btBattery <= 10 {
+						btColor = ui.Hex("#ff4757")
+					} else if textState.btBattery <= 40 {
+						btColor = ui.Hex("#ffa502")
+					}
+					label := textState.btName
+					if label == "" {
+						label = "耳机"
+					}
+					dataCell(c, label, fmt.Sprintf("%d%%", textState.btBattery), btColor)
+				}
 			})
 		})
 	})
@@ -351,7 +371,7 @@ func main() {
 	mygo.App.WhenReady(func() {
 		w := mygo.NewWindow(mygo.WindowOptions{
 			Title:             "perfmode-osd",
-			Width:             420,
+			Width:             480,
 			Height:            128,
 			X:                 24,
 			Y:                 24,
@@ -480,7 +500,19 @@ func main() {
 			{Label: "触摸板 关", Click: func(*mygo.MenuItem, *mygo.Window) { writeTp(false) }},
 			mygo.Separator(),
 			{Label: "显示当前状态", Click: func(*mygo.MenuItem, *mygo.Window) {
-				showOSD(textState.title, textState.sub, textState.accent, textState.glyph)
+				// 重新读 EC 当前状态组装，不复用上次弹窗残留的文字（如"蓝牙已断开"）
+				go func() {
+					ec, err := core.OpenECDirect()
+					if err != nil {
+						return
+					}
+					defer ec.Close()
+					mode, e := ec.ReadStable(0xE4)
+					if e != nil || mode > 2 {
+						mode = 0
+					}
+					showOSD(modeName[mode], "功耗墙 "+powerWall[mode], modeAccent[mode], modeGlyph[mode])
+				}()
 			}},
 			mygo.Separator(),
 			{Label: "开机启动", Type: mygo.MenuItemCheckbox, Checked: isAutoStart(),
@@ -538,6 +570,80 @@ func main() {
 						showOSD("触摸板 · 关", "已禁用", "#d63031", "板")
 					}
 				}
+			}
+		}()
+
+		// ===== 蓝牙耳机电量 + 连接/断开监听 =====
+		go func() {
+			// 上次状态，用于检测变化
+			lastConnected := false
+			lastBattery := -1
+			lastMAC := ""
+
+			for {
+				devs := btbat.ReadAll()
+
+				var cur *btbat.Device
+				if len(devs) > 0 {
+					// 有多个就取第一个（一般只有耳机）
+					cur = &devs[0]
+				}
+
+				if cur != nil {
+					// 已连接
+					bat := cur.Battery
+					mac := cur.MAC
+					name := cur.Name
+					if name == "" {
+						name = "蓝牙设备"
+					}
+
+					changedConn := !lastConnected
+					changedBat := bat != lastBattery
+					changedMAC := mac != lastMAC
+
+					if changedConn || changedMAC {
+						// 刚连上：弹提示 + 显示电量
+						w.Update(func() {
+							textState.btBattery = bat
+							textState.btName = name
+						})
+						showOSD(name, fmt.Sprintf("已连接 · %d%%", bat), "#0984e3", "耳")
+						lastConnected = true
+						lastBattery = bat
+						lastMAC = mac
+					} else if changedBat {
+						// 电量变了：更新数据栏，只在低电量时弹提示
+						w.Update(func() {
+							textState.btBattery = bat
+						})
+						if bat <= 10 && lastBattery > 10 {
+							showOSD(name+" · 低电量", fmt.Sprintf("%d%%，请充电", bat), "#d63031", "电")
+						}
+						lastBattery = bat
+					} else {
+						w.Update(func() { textState.btBattery = bat })
+					}
+				} else {
+					// 未连接（读不到电量）
+					if lastConnected {
+						// 刚断开：用上次记下的设备名
+						prevName := textState.btName
+						if prevName == "" {
+							prevName = "蓝牙设备"
+						}
+						w.Update(func() {
+							textState.btBattery = -1
+							textState.btName = ""
+						})
+						showOSD(prevName+" · 已断开", "连接已中断", "#636e72", "断")
+						lastConnected = false
+						lastBattery = -1
+						lastMAC = ""
+					}
+				}
+
+				time.Sleep(3 * time.Second)
 			}
 		}()
 
