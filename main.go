@@ -150,8 +150,16 @@ var (
 	procSetWindowLongPtr = user32.NewProc("SetWindowLongPtrW")
 	procCallWindowProc   = user32.NewProc("CallWindowProcW")
 	procSendMessage      = user32.NewProc("SendMessageW")
+	procSetWindowPos     = user32.NewProc("SetWindowPos")
 	shell32              = windows.NewLazySystemDLL("shell32.dll")
 	procShellExecute     = shell32.NewProc("ShellExecuteW")
+)
+
+const (
+	hwndTopmost = ^uintptr(0) // -1 = HWND_TOPMOST
+	swpNoMove   = 0x0002
+	swpNoSize   = 0x0001
+	swpNoActivateOSD = 0x0010
 )
 
 const (
@@ -403,6 +411,8 @@ func main() {
 			myGen := osdGen
 			w.SetOpacity(opacity)
 			w.ShowInactive() // 只显示不激活，避免出现在任务栏/抢焦点
+			// 强制提到 topmost 层最上面（ShowInactive 不提升 Z 序，可能被其他置顶窗口盖住）
+			procSetWindowPos.Call(w.NativeHandle(), hwndTopmost, 0, 0, 0, 0, swpNoMove|swpNoSize|swpNoActivateOSD|0x0040)
 			animMu.Unlock()
 			// 停留 2 秒后渐隐退出；期间若有新触发（代次变了）则放弃本次淡出
 			go func() {

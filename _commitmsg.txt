@@ -1,0 +1,8 @@
+Bring OSD to topmost layer on show
+
+ShowInactive uses SW_SHOWNOACTIVATE which does not raise Z order, so the
+panel window could sit below other topmost windows. Call SetWindowPos with
+HWND_TOPMOST (SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE|SWP_SHOWWINDOW) right
+after showing to force it above all other windows without stealing focus.
+
+Co-Authored-By: DeepSeek <noreply@deepseek.com>
